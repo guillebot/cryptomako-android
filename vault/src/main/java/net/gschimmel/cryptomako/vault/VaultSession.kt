@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
+import java.util.UUID
 
 /**
  * Unlocked format-8 Cryptomator vault backed by an [ObjectStore].
@@ -295,6 +296,147 @@ class VaultSession private constructor(
         }
     }
 
+
+
+    /**
+     * Creates a directory in the vault. Durable only after remote put of `dir.c9r` + `dirid.c9r`.
+     * Fail-closed: both puts must succeed.
+     */
+    fun createDirectory(
+        parentDirId: String,
+        cleartextName: String,
+        skipExistsCheck: Boolean = false,
+    ): VaultNode {
+        val name = cleartextName.trim()
+        if (name.isEmpty() || name.contains('/')) {
+            throw VaultException.InvalidPath(cleartextName)
+        }
+        if (!skipExistsCheck && list(parentDirId).any { it.cleartextName == name }) {
+            throw VaultException.AlreadyExists(name)
+        }
+
+        val childDirId = UUID.randomUUID().toString()
+        val encName = try {
+            cryptor.fileNameCryptor().encryptFilename(
+                BaseEncoding.base64Url(),
+                name,
+                DirLayout.associatedData(parentDirId),
+            ) + DirLayout.FILE_SUFFIX
+        } catch (e: Exception) {
+            throw VaultException.Io("encrypt directory name failed", e)
+        }
+
+        val parentPrefix = DirLayout.ciphertextDirectoryPrefix(prefix, cryptor.fileNameCryptor(), parentDirId)
+        val shortened = encName.length > config.shorteningThreshold
+        val displayCipherName = if (shortened) DirLayout.shortenedName(encName) else encName
+        val folderKeyPrefix = "$parentPrefix$displayCipherName/"
+        val dirMarkerKey = folderKeyPrefix + DirLayout.DIR_FILE
+        val childPrefix = DirLayout.ciphertextDirectoryPrefix(prefix, cryptor.fileNameCryptor(), childDirId)
+        val dirIdKey = childPrefix + DirLayout.DIRID_FILE
+        val idData = childDirId.toByteArray(StandardCharsets.UTF_8)
+
+        try {
+            if (shortened) {
+                store.putObject(folderKeyPrefix + DirLayout.NAME_FILE, encName.toByteArray(StandardCharsets.UTF_8))
+            }
+            store.putObject(dirMarkerKey, idData)
+            store.putObject(dirIdKey, idData)
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("createDirectory putObject failed for $name", e)
+        }
+
+        return VaultNode(
+            cleartextName = name,
+            kind = NodeKind.DIRECTORY,
+            cipherName = displayCipherName,
+            parentDirId = parentDirId,
+            dirId = childDirId,
+            ciphertextKey = dirMarkerKey,
+        )
+    }
+
+    /**
+     * Ensures `/a/b/c` exists as directories; returns the dirId of the leaf.
+     * Empty / blank path → root dir id.
+     */
+    fun ensureDirectoryPath(cleartextPath: String): String {
+        val parts = cleartextPath.split('/')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "." }
+        var parentDirId = ROOT_DIR_ID
+        for (part in parts) {
+            val kids = list(parentDirId)
+            val existing = kids.firstOrNull { it.kind == NodeKind.DIRECTORY && it.cleartextName == part }
+            if (existing?.dirId != null) {
+                parentDirId = existing.dirId
+                continue
+            }
+            val created = createDirectory(parentDirId = parentDirId, cleartextName = part)
+            parentDirId = created.dirId
+                ?: throw VaultException.NotADirectory(part)
+        }
+        return parentDirId
+    }
+
+    /**
+     * Encrypt cleartext and PUT ciphertext (overwrites same cleartext name).
+     * Success only after [ObjectStore.putObject] completes (fail-closed).
+     */
+    fun createOrOverwriteFile(
+        parentDirId: String,
+        cleartextName: String,
+        contents: ByteArray,
+    ): VaultNode {
+        val name = cleartextName.trim()
+        if (name.isEmpty() || name.contains('/')) {
+            throw VaultException.InvalidPath(cleartextName)
+        }
+
+        val encName = try {
+            cryptor.fileNameCryptor().encryptFilename(
+                BaseEncoding.base64Url(),
+                name,
+                DirLayout.associatedData(parentDirId),
+            ) + DirLayout.FILE_SUFFIX
+        } catch (e: Exception) {
+            throw VaultException.Io("encrypt filename failed", e)
+        }
+
+        val parentPrefix = DirLayout.ciphertextDirectoryPrefix(prefix, cryptor.fileNameCryptor(), parentDirId)
+        val cipherBytes = try {
+            encryptContent(contents)
+        } catch (e: Exception) {
+            throw VaultException.Io("encrypt content failed", e)
+        }
+
+        val ciphertextKey: String
+        val displayCipherName: String
+        try {
+            if (encName.length > config.shorteningThreshold) {
+                val short = DirLayout.shortenedName(encName)
+                val folder = "$parentPrefix$short/"
+                ciphertextKey = folder + DirLayout.CONTENTS_FILE
+                displayCipherName = short
+                store.putObject(folder + DirLayout.NAME_FILE, encName.toByteArray(StandardCharsets.UTF_8))
+                store.putObject(ciphertextKey, cipherBytes)
+            } else {
+                ciphertextKey = parentPrefix + encName
+                displayCipherName = encName
+                store.putObject(ciphertextKey, cipherBytes)
+            }
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("upload putObject failed for $name", e)
+        }
+
+        return VaultNode(
+            cleartextName = name,
+            kind = NodeKind.FILE,
+            cipherName = displayCipherName,
+            parentDirId = parentDirId,
+            ciphertextKey = ciphertextKey,
+            size = cipherBytes.size.toLong(),
+        )
+    }
 
     override fun close() {
         try {
