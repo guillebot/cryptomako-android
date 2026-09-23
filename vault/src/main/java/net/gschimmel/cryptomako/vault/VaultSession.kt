@@ -6,8 +6,13 @@ import net.gschimmel.cryptomako.store.ObjectStoreException
 import org.cryptomator.cryptolib.api.Cryptor
 import org.cryptomator.cryptolib.api.CryptorProvider
 import org.cryptomator.cryptolib.api.Masterkey
+import org.cryptomator.cryptolib.common.DecryptingReadableByteChannel
+import org.cryptomator.cryptolib.common.EncryptingWritableByteChannel
 import org.cryptomator.cryptolib.common.MasterkeyFileAccess
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 
@@ -169,6 +174,127 @@ class VaultSession private constructor(
     private fun relativeName(key: String, prefix: String): String {
         return if (key.startsWith(prefix)) key.substring(prefix.length) else key
     }
+
+
+    /**
+     * Download ciphertext for [node] and decrypt to cleartext bytes.
+     * Fail-closed: transport / auth errors propagate; never returns partial garbage as success.
+     */
+    fun downloadCleartext(node: VaultNode): ByteArray {
+        if (node.kind != NodeKind.FILE) {
+            throw VaultException.NotAFile(node.cleartextName)
+        }
+        if (node.ciphertextKey.isEmpty()) {
+            throw VaultException.Io("missing ciphertext key for ${node.cleartextName}")
+        }
+        val ciphertext = try {
+            store.getObject(node.ciphertextKey)
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("download failed for ${node.cleartextName}", e)
+        }
+        return try {
+            decryptContent(ciphertext)
+        } catch (e: Exception) {
+            throw VaultException.Io("decrypt failed for ${node.cleartextName}", e)
+        }
+    }
+
+    /**
+     * Encrypt a small cleartext file and PUT ciphertext via [ObjectStore].
+     * Success only after [ObjectStore.putObject] completes (fail-closed).
+     * Format-8 layout: `name.c9r`, or shortened `.c9s/` + `name.c9s` + `contents.c9r`.
+     */
+    fun uploadCleartextFile(
+        parentDirId: String,
+        cleartextName: String,
+        contents: ByteArray,
+    ): VaultNode {
+        val name = cleartextName.trim()
+        if (name.isEmpty() || name.contains('/')) {
+            throw VaultException.InvalidPath(cleartextName)
+        }
+        if (list(parentDirId).any { it.cleartextName == name }) {
+            throw VaultException.AlreadyExists(name)
+        }
+
+        val encName = try {
+            cryptor.fileNameCryptor().encryptFilename(
+                BaseEncoding.base64Url(),
+                name,
+                DirLayout.associatedData(parentDirId),
+            ) + DirLayout.FILE_SUFFIX
+        } catch (e: Exception) {
+            throw VaultException.Io("encrypt filename failed", e)
+        }
+
+        val parentPrefix = DirLayout.ciphertextDirectoryPrefix(prefix, cryptor.fileNameCryptor(), parentDirId)
+        val cipherBytes = try {
+            encryptContent(contents)
+        } catch (e: Exception) {
+            throw VaultException.Io("encrypt content failed", e)
+        }
+
+        val ciphertextKey: String
+        val displayCipherName: String
+        try {
+            if (encName.length > config.shorteningThreshold) {
+                val short = DirLayout.shortenedName(encName)
+                val folder = "$parentPrefix$short/"
+                ciphertextKey = folder + DirLayout.CONTENTS_FILE
+                displayCipherName = short
+                store.putObject(folder + DirLayout.NAME_FILE, encName.toByteArray(StandardCharsets.UTF_8))
+                store.putObject(ciphertextKey, cipherBytes)
+            } else {
+                ciphertextKey = parentPrefix + encName
+                displayCipherName = encName
+                store.putObject(ciphertextKey, cipherBytes)
+            }
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("upload putObject failed for $name", e)
+        }
+
+        return VaultNode(
+            cleartextName = name,
+            kind = NodeKind.FILE,
+            cipherName = displayCipherName,
+            parentDirId = parentDirId,
+            ciphertextKey = ciphertextKey,
+            size = cipherBytes.size.toLong(),
+        )
+    }
+
+    private fun encryptContent(cleartext: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        Channels.newChannel(out).use { writable ->
+            EncryptingWritableByteChannel(writable, cryptor).use { enc ->
+                val buf = ByteBuffer.wrap(cleartext)
+                while (buf.hasRemaining()) {
+                    enc.write(buf)
+                }
+            }
+        }
+        return out.toByteArray()
+    }
+
+    private fun decryptContent(ciphertext: ByteArray): ByteArray {
+        ByteArrayInputStream(ciphertext).use { input ->
+            Channels.newChannel(input).use { readable ->
+                DecryptingReadableByteChannel(readable, cryptor, true).use { dec ->
+                    val out = ByteArrayOutputStream()
+                    val buf = ByteBuffer.allocate(64 * 1024)
+                    while (true) {
+                        buf.clear()
+                        val n = dec.read(buf)
+                        if (n < 0) break
+                        buf.flip()
+                        out.write(buf.array(), buf.position(), buf.remaining())
+                    }
+                    return out.toByteArray()
+                }
+            }
+        }
+    }
+
 
     override fun close() {
         try {

@@ -18,5 +18,9 @@ android {
 
 dependencies {
     api(project(":vault"))
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    api("com.squareup.okhttp3:okhttp:4.12.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.1.10")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

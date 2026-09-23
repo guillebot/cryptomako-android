@@ -57,6 +57,8 @@ dependencies {
     implementation(project(":vault"))
     implementation(project(":s3"))
 
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
