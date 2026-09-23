@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -20,6 +21,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Runs Backup Sync while a [VaultSession] is held in [VaultSessionHolder].
  * Fail-closed: if the vault is locked, the worker fails with a visible error (never silent success).
+ * Hard-fails before any upload when nested/overlapping backup sources are present.
  */
 class BackupWorker(
     appContext: Context,
@@ -28,45 +30,68 @@ class BackupWorker(
 
     override suspend fun doWork(): Result {
         val prefs = BackupPreferences(applicationContext)
-        val treeUri = prefs.treeUri
-            ?: return fail("No backup folder selected (SAF tree URI missing)")
-        val folderName = prefs.treeDisplayName.ifBlank { "Device" }
+        val sources = prefs.loadSources()
+        if (sources.isEmpty()) {
+            return fail("No backup folder selected (SAF tree URI missing)")
+        }
         val session = VaultSessionHolder.session
             ?: return fail("Vault is locked — unlock CryptoMako before backup")
+
+        // Platforms consensus: hard-fail Sync when one resolved URI prefixes another.
+        val overlapErr = BackupUriOverlap.overlapErrorOrNull(sources)
+        if (overlapErr != null) {
+            return fail(overlapErr)
+        }
 
         setForeground(createForegroundInfo("Starting backup…"))
 
         val engine = BackupEngine(applicationContext, session, prefs.loadExcludes())
-        val result = engine.run(
-            treeUri = treeUri,
-            folderName = folderName,
-            onProgress = { p ->
-                // Do not put cleartext relative paths into the notification shade.
-                val label = when (p.phase) {
-                    BackupProgress.Phase.SCANNING -> "Scanning…"
-                    BackupProgress.Phase.UPLOADING ->
-                        "Uploading ${p.filesDone}/${p.filesTotal}"
-                    BackupProgress.Phase.FINISHED -> "Backup finished"
-                    BackupProgress.Phase.FAILED -> "Backup failed"
-                }
-                notify(label)
-            },
-            isCancelled = { isStopped },
-        )
+        var filesDone = 0
+        var bytesDone = 0L
+        var filesSkipped = 0
 
-        return when (result.phase) {
-            BackupProgress.Phase.FINISHED -> {
-                notify("Uploaded ${result.filesDone} files")
-                Result.success(
-                    workDataOf(
-                        KEY_FILES to result.filesDone,
-                        KEY_BYTES to result.bytesDone,
-                        KEY_MESSAGE to "Uploaded ${result.filesDone} files (${result.bytesDone} bytes)",
-                    ),
-                )
+        for ((index, source) in sources.withIndex()) {
+            val label = source.displayName.ifBlank { "Device" }
+            notify("Backup ${index + 1}/${sources.size}: $label…")
+            val treeUri = try {
+                Uri.parse(source.safUri)
+            } catch (e: Exception) {
+                return fail("Invalid SAF URI for source '$label': ${e.message}")
             }
-            else -> fail(result.error ?: "Backup failed")
+            val result = engine.run(
+                treeUri = treeUri,
+                folderName = label,
+                onProgress = { p ->
+                    val phaseLabel = when (p.phase) {
+                        BackupProgress.Phase.SCANNING -> "Scanning $label…"
+                        BackupProgress.Phase.UPLOADING ->
+                            "Uploading $label ${p.filesDone}/${p.filesTotal}"
+                        BackupProgress.Phase.FINISHED -> "Finished $label"
+                        BackupProgress.Phase.FAILED -> "Failed $label"
+                    }
+                    notify(phaseLabel)
+                },
+                isCancelled = { isStopped },
+            )
+            when (result.phase) {
+                BackupProgress.Phase.FINISHED -> {
+                    filesDone += result.filesDone
+                    bytesDone += result.bytesDone
+                    filesSkipped += result.filesSkipped
+                }
+                else -> return fail(result.error ?: "Backup failed for $label")
+            }
         }
+
+        notify("Uploaded $filesDone files")
+        return Result.success(
+            workDataOf(
+                KEY_FILES to filesDone,
+                KEY_BYTES to bytesDone,
+                KEY_MESSAGE to "Uploaded $filesDone files ($bytesDone bytes)" +
+                    if (filesSkipped > 0) "; skipped $filesSkipped" else "",
+            ),
+        )
     }
 
     private fun fail(message: String): Result {

@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +15,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -28,6 +30,8 @@ import androidx.lifecycle.Observer
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import net.gschimmel.cryptomako.backup.BackupPreferences
+import net.gschimmel.cryptomako.backup.BackupSource
+import net.gschimmel.cryptomako.backup.BackupUriOverlap
 import net.gschimmel.cryptomako.backup.BackupWorker
 import net.gschimmel.cryptomako.backup.VaultSessionHolder
 import net.gschimmel.cryptomako.vault.VaultSession
@@ -39,18 +43,17 @@ fun BackupPane(
 ) {
     val context = LocalContext.current
     val backupPrefs = remember { BackupPreferences(context) }
-    var treeLabel by remember {
-        mutableStateOf(
-            backupPrefs.treeDisplayName.ifBlank {
-                backupPrefs.treeUri?.toString() ?: "(none selected)"
-            },
-        )
-    }
+    var sources by remember { mutableStateOf(backupPrefs.loadSources()) }
+    var softWarn by remember { mutableStateOf<String?>(null) }
     var periodic by remember { mutableStateOf(backupPrefs.periodicEnabled) }
     var workMessage by remember { mutableStateOf<String?>(null) }
     var workError by remember { mutableStateOf<String?>(null) }
     var workRunning by remember { mutableStateOf(false) }
     var progressFraction by remember { mutableStateOf<Float?>(null) }
+
+    fun refreshSources() {
+        sources = backupPrefs.loadSources()
+    }
 
     val treePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -68,11 +71,23 @@ fun BackupPane(
             return@rememberLauncherForActivityResult
         }
         val name = DocumentFile.fromTreeUri(context, uri)?.name?.ifBlank { null } ?: "Device"
-        backupPrefs.treeUri = uri
-        backupPrefs.treeDisplayName = name
-        treeLabel = name
+        val result = backupPrefs.addSource(uri.toString(), name)
+        refreshSources()
         workError = null
-        workMessage = "Folder selected: $name (permission persisted)"
+        when {
+            result.alreadyListed -> {
+                softWarn = null
+                workMessage = "Already listed: $name"
+            }
+            result.softWarn != null -> {
+                softWarn = result.softWarn
+                workMessage = "Added: $name (nested overlap — Sync will refuse until fixed)"
+            }
+            else -> {
+                softWarn = null
+                workMessage = "Added: $name (permission persisted)"
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -117,27 +132,67 @@ fun BackupPane(
     ) {
         Text("Backup Sync (SAF)", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Pick a device folder via Storage Access Framework. " +
+            "Add device folders via Storage Access Framework. " +
                 "Files are encrypted into the unlocked vault under Backups/<folder>/…. " +
+                "Nested/overlapping sources: soft-warn on add, hard-fail on Sync. " +
                 "Remote puts succeed only on HTTP 2xx (fail-closed). " +
                 "Requires an unlocked vault; passphrase is never stored for background work.",
             style = MaterialTheme.typography.bodySmall,
         )
-        Text("Selected folder: $treeLabel", style = MaterialTheme.typography.bodyMedium)
+
+        Text("Backup sources", style = MaterialTheme.typography.titleSmall)
+        if (sources.isEmpty()) {
+            Text("(none selected)", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            sources.forEach { src: BackupSource ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "• ${src.displayName}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            backupPrefs.removeSource(src.id)
+                            refreshSources()
+                            softWarn = BackupUriOverlap.overlapErrorOrNull(backupPrefs.loadSources())
+                                ?.let { "Still overlapping — Sync will refuse until fixed." }
+                            workMessage = "Removed: ${src.displayName}"
+                        },
+                    ) { Text("Remove") }
+                }
+            }
+        }
+
         Button(
             onClick = { treePicker.launch(null) },
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Pick folder…") }
+        ) { Text("Add folder…") }
+
+        softWarn?.let {
+            Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+        }
 
         Button(
-            enabled = !workRunning && session != null && backupPrefs.treeUri != null,
+            enabled = !workRunning && session != null && sources.isNotEmpty(),
             onClick = {
                 if (session == null) {
                     workError = "Unlock the vault before backup"
                     return@Button
                 }
+                // Preflight hard-fail in UI so the user sees the message without waiting on WM.
+                val overlap = BackupUriOverlap.overlapErrorOrNull(backupPrefs.loadSources())
+                if (overlap != null) {
+                    workError = overlap
+                    workMessage = null
+                    return@Button
+                }
                 VaultSessionHolder.set(session)
                 workError = null
+                softWarn = null
                 workMessage = "Enqueueing backup…"
                 BackupWorker.enqueueNow(context)
             },
@@ -146,7 +201,7 @@ fun BackupPane(
             Text(
                 when {
                     session == null -> "Backup now (unlock first)"
-                    backupPrefs.treeUri == null -> "Backup now (pick folder first)"
+                    sources.isEmpty() -> "Backup now (add folder first)"
                     workRunning -> "Backup running…"
                     else -> "Backup now"
                 },
