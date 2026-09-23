@@ -1,0 +1,4 @@
+-keep class org.cryptomator.cryptolib.** { *; }
+-keep class org.cryptomator.siv.** { *; }
+-keep class org.cryptomator.cryptolib.v1.CryptorProviderImpl { *; }
+-keep class org.cryptomator.cryptolib.v2.CryptorProviderImpl { *; }
