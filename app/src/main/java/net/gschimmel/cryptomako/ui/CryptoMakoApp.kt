@@ -47,6 +47,9 @@ import net.gschimmel.cryptomako.vault.NodeKind
 import net.gschimmel.cryptomako.vault.VaultException
 import net.gschimmel.cryptomako.vault.VaultNode
 import net.gschimmel.cryptomako.vault.VaultSession
+import net.gschimmel.cryptomako.backup.BackupPreferences
+import net.gschimmel.cryptomako.backup.BackupWorker
+import net.gschimmel.cryptomako.backup.LockVault
 import net.gschimmel.cryptomako.backup.VaultSessionHolder
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -131,8 +134,9 @@ fun CryptoMakoApp() {
         if (storageMode == VaultSettings.StorageMode.S3) prefix.trim() else ""
 
     fun lockVault() {
-        // Holder closes + destroys cryptor/masterkey; close is idempotent if UI also held it.
-        VaultSessionHolder.clear()
+        // High parity: cancel Backup Sync WorkManager first, then tear down in-process session.
+        // EncryptedSharedPreferences / Keystore stay untouched (Forget credentials deferred).
+        LockVault.perform(context)
         session = null
         nodes = emptyList()
         recursivePaths = emptyList()
@@ -153,7 +157,7 @@ fun CryptoMakoApp() {
             nodes = root
             recursivePaths = all
         }.onFailure {
-            VaultSessionHolder.clear()
+            LockVault.perform(context)
             session = null
             screen = Screen.Unlock
             error = "Session restore failed"
@@ -269,6 +273,10 @@ fun CryptoMakoApp() {
                                 result.onSuccess { (s, root, all) ->
                                     session = s
                                     VaultSessionHolder.set(s)
+                                    // Lock cancelled periodic schedule; restore if user left it enabled.
+                                    if (BackupPreferences(context).periodicEnabled) {
+                                        BackupWorker.setPeriodicEnabled(context, true)
+                                    }
                                     nodes = root
                                     recursivePaths = all
                                     currentDirId = VaultSession.ROOT_DIR_ID

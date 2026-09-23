@@ -150,5 +150,19 @@ class BackupWorker(
                 wm.cancelUniqueWork(UNIQUE_PERIODIC)
             }
         }
+
+        /**
+         * Unique work names cancelled on Lock (High parity with Mac: stop Backup Sync
+         * before tearing down the in-process vault session).
+         */
+        fun lockCancelWorkNames(): List<String> = listOf(UNIQUE_ONE_SHOT, UNIQUE_PERIODIC)
+
+        /** Cancel one-shot and periodic Backup Sync WorkManager jobs. */
+        fun cancelAll(context: Context) {
+            val wm = WorkManager.getInstance(context)
+            for (name in lockCancelWorkNames()) {
+                wm.cancelUniqueWork(name)
+            }
+        }
     }
 }
