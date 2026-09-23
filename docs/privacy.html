@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="CryptoMako Android privacy policy">
+  <title>CryptoMako Privacy Policy</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f7f8fa; --card: #fff; --text: #1f2937; --muted: #4b5563; --accent: #0f766e; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111827; --card: #1f2937; --text: #f3f4f6; --muted: #d1d5db; --accent: #5eead4; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 760px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    article { background: var(--card); border-radius: 14px; padding: clamp(1.25rem, 4vw, 3rem); box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+    h1 { margin-top: 0; line-height: 1.2; font-size: clamp(2rem, 7vw, 3rem); }
+    h2 { margin-top: 2rem; line-height: 1.3; }
+    h3 { margin-top: 1.5rem; }
+    a { color: var(--accent); }
+    .date, .lead { color: var(--muted); }
+    code { font-size: .92em; }
+    footer { color: var(--muted); font-size: .9rem; margin-top: 1rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <h1>CryptoMako Privacy Policy</h1>
+      <p class="date"><strong>Effective date: September 23, 2026</strong></p>
+      <p class="lead">CryptoMako is a free and open-source Android client for Cryptomator format-8 vaults. This policy explains what information the app handles and where it goes.</p>
+
+      <h2>Summary</h2>
+      <ul>
+        <li>CryptoMako has no cloud account, backend, advertising, or third-party analytics service.</li>
+        <li>The app does not collect or sell personal information.</li>
+        <li>Vault contents and settings remain on your device or are sent only to the local storage location or HTTPS S3 bucket that you choose.</li>
+        <li>Your vault passphrase is used only during the active unlock session and is never stored by CryptoMako.</li>
+      </ul>
+
+      <h2>Information CryptoMako handles</h2>
+      <h3>Vault contents and metadata</h3>
+      <p>When you open a vault, CryptoMako processes the vault and its contents on your device so that it can display names and decrypt or encrypt files. When you upload or back up files, CryptoMako writes the resulting Cryptomator ciphertext to the storage destination you selected. SAF Backup Sync places backups under <code>Backups/…</code> in the selected vault; the backup files are encrypted before they leave the device.</p>
+      <p>For a local vault, this information stays on your device and the local storage location you selected. For an S3 vault, encrypted vault objects and the requests needed to access them are sent over HTTPS to the S3-compatible endpoint, bucket, and prefix that you configure. CryptoMako does not send vault contents to a CryptoMako server because no such server exists.</p>
+      <p>Your S3 endpoint or storage provider may independently process connection metadata, such as an IP address and request timestamps, under its own privacy policy. CryptoMako does not receive or control that provider-side processing.</p>
+
+      <h3>Credentials and settings</h3>
+      <p>CryptoMako stores non-secret vault connection settings on your device so you can reconnect, such as the storage mode, endpoint, region, bucket, prefix, and S3 access-key identifier. If you choose to save an S3 secret key, it is stored in Android <code>EncryptedSharedPreferences</code>, backed by the Android Keystore. The vault passphrase is not stored.</p>
+
+      <h2>What CryptoMako does not collect</h2>
+      <p>CryptoMako does not use third-party analytics, advertising SDKs, or third-party crash-reporting services. It does not create a CryptoMako account, maintain a user profile, or collect contacts, location, browsing history, or usage analytics. It does not sell or share personal information for advertising.</p>
+
+      <h2>Permissions and system services</h2>
+      <ul>
+        <li><strong>Internet:</strong> required only for connecting to the HTTPS S3 endpoint you configure.</li>
+        <li><strong>Storage Access Framework:</strong> when you choose Backup → Pick folder…, Android grants CryptoMako access to that folder. The app uses this user-selected access to read files for backup and may retain the system-provided tree permission so an enabled backup can run later. CryptoMako does not request broad device-storage access.</li>
+        <li><strong>Notifications:</strong> Android may use notifications to report backup progress or errors when you allow notifications.</li>
+        <li><strong>Foreground/data-sync service:</strong> Android WorkManager may use the system foreground service for an active backup. A background backup still requires an unlocked in-process vault session; the passphrase is not stored for background unlocking.</li>
+      </ul>
+
+      <h2>Security</h2>
+      <p>CryptoMako is designed to use HTTPS for remote S3 endpoints and to write encrypted Cryptomator data. No method of storage or transmission is completely risk-free. Keep your device, Android installation, S3 account, and vault credentials secure, and review the privacy and security practices of your chosen storage provider.</p>
+
+      <h2>Children’s privacy</h2>
+      <p>CryptoMako is not directed to children under 13. We do not knowingly collect personal information from children.</p>
+
+      <h2>Changes to this policy</h2>
+      <p>We may update this policy when CryptoMako’s behavior or legal requirements change. The effective date at the top will be updated when a new version is published. Continued use of the app after an update means the updated policy applies.</p>
+
+      <h2>Contact</h2>
+      <p>For privacy questions or requests, please <a href="https://github.com/guillebot/cryptomako-android/issues">open an issue on the CryptoMako Android GitHub repository</a>. The source code is available at <a href="https://github.com/guillebot/cryptomako-android">github.com/guillebot/cryptomako-android</a> under the AGPL-3.0 license.</p>
+    </article>
+    <footer>CryptoMako · AGPL-3.0</footer>
+  </main>
+</body>
+</html>

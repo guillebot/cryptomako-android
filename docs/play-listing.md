@@ -13,7 +13,7 @@ Status: **placeholder** — no Play Console upload in this iteration.
 | Full description | See below |
 | Category | Productivity |
 | License | AGPL-3.0 (must disclose source; see About in-app) |
-| Privacy policy URL | **TBD** (Guillermo must provide before production release) |
+| Privacy policy URL | https://guillebot.github.io/cryptomako-android/privacy.html |
 
 ## Full description (draft)
 
@@ -49,7 +49,7 @@ Release builds enable **R8 minify + shrinkResources**. ProGuard keeps cryptolib 
 ## What Guillermo still must provide
 
 1. Upload keystore (`.jks` / `.keystore`) + passwords — **never commit**.
-2. Privacy policy URL hosted somewhere public.
+2. Verify the published privacy policy URL in the Play Console listing.
 3. Play Console developer account, store listing assets (icon 512, feature graphic, screenshots), content rating questionnaire.
 4. Decide whether to publish under AGPL with source link prominently in listing (recommended).
 
