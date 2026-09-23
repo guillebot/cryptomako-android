@@ -41,12 +41,13 @@ class BackupWorker(
             treeUri = treeUri,
             folderName = folderName,
             onProgress = { p ->
+                // Do not put cleartext relative paths into the notification shade.
                 val label = when (p.phase) {
                     BackupProgress.Phase.SCANNING -> "Scanning…"
                     BackupProgress.Phase.UPLOADING ->
-                        "Uploading ${p.filesDone}/${p.filesTotal}: ${p.currentPath}"
+                        "Uploading ${p.filesDone}/${p.filesTotal}"
                     BackupProgress.Phase.FINISHED -> "Backup finished"
-                    BackupProgress.Phase.FAILED -> "Backup failed: ${p.error}"
+                    BackupProgress.Phase.FAILED -> "Backup failed"
                 }
                 notify(label)
             },

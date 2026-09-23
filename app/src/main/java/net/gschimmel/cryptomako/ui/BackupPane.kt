@@ -59,20 +59,13 @@ fun BackupPane(
             workError = "Folder pick cancelled"
             return@rememberLauncherForActivityResult
         }
-        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        // Backup only reads device files; do not request write URI permission.
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
         try {
             context.contentResolver.takePersistableUriPermission(uri, flags)
         } catch (e: SecurityException) {
-            // Some providers only grant read; still persist read.
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            } catch (e2: SecurityException) {
-                workError = e2.message ?: "Could not persist SAF permission"
-                return@rememberLauncherForActivityResult
-            }
+            workError = e.message ?: "Could not persist SAF read permission"
+            return@rememberLauncherForActivityResult
         }
         val name = DocumentFile.fromTreeUri(context, uri)?.name?.ifBlank { null } ?: "Device"
         backupPrefs.treeUri = uri

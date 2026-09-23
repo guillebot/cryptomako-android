@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,7 +61,12 @@ fun CryptoMakoApp() {
     val initial = remember { settingsStore.load() }
     val initialSecret = remember { String(settingsStore.loadSecretKey()) }
 
-    var screen by remember { mutableStateOf(Screen.Settings) }
+    // If process still holds an unlocked session (e.g. after config change), keep UI in sync
+    // so Lock can destroy masterkey; do not orphan key material without a Lock affordance.
+    val heldSession = remember { VaultSessionHolder.session }
+    var screen by remember {
+        mutableStateOf(if (heldSession != null) Screen.Browser else Screen.Settings)
+    }
     var storageMode by remember { mutableStateOf(initial.storageMode) }
     var vaultPath by remember {
         mutableStateOf(initial.localVaultPath.ifEmpty { "/Users/guille/dev/cryptomako/fixtures/vault" })
@@ -77,7 +83,7 @@ fun CryptoMakoApp() {
     var error by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var session by remember { mutableStateOf<VaultSession?>(null) }
+    var session by remember { mutableStateOf(heldSession) }
     var nodes by remember { mutableStateOf<List<VaultNode>>(emptyList()) }
     var recursivePaths by remember { mutableStateOf<List<String>>(emptyList()) }
     var currentDirId by remember { mutableStateOf(VaultSession.ROOT_DIR_ID) }
@@ -125,9 +131,9 @@ fun CryptoMakoApp() {
         if (storageMode == VaultSettings.StorageMode.S3) prefix.trim() else ""
 
     fun lockVault() {
-        session?.close()
-        session = null
+        // Holder closes + destroys cryptor/masterkey; close is idempotent if UI also held it.
         VaultSessionHolder.clear()
+        session = null
         nodes = emptyList()
         recursivePaths = emptyList()
         passphrase = ""
@@ -136,6 +142,22 @@ fun CryptoMakoApp() {
         breadcrumb = listOf("" to VaultSession.ROOT_DIR_ID)
         screen = Screen.Unlock
         status = null
+    }
+
+    LaunchedEffect(heldSession) {
+        val s = heldSession ?: return@LaunchedEffect
+        val result = withContext(Dispatchers.IO) {
+            runCatching { s.list() to s.listRecursive() }
+        }
+        result.onSuccess { (root, all) ->
+            nodes = root
+            recursivePaths = all
+        }.onFailure {
+            VaultSessionHolder.clear()
+            session = null
+            screen = Screen.Unlock
+            error = "Session restore failed"
+        }
     }
 
     Scaffold(

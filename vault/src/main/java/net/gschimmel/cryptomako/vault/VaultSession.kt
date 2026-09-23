@@ -438,7 +438,12 @@ class VaultSession private constructor(
         )
     }
 
+    @Volatile
+    private var closed: Boolean = false
+
     override fun close() {
+        if (closed) return
+        closed = true
         try {
             cryptor.destroy()
         } finally {
