@@ -1,0 +1,6 @@
+-keep class org.cryptomator.cryptolib.** { *; }
+-keep class org.cryptomator.siv.** { *; }
+-keep class com.google.common.io.BaseEncoding { *; }
+-keepclassmembers class * implements org.cryptomator.cryptolib.api.CryptorProvider { *; }
+-keep class org.cryptomator.cryptolib.v1.CryptorProviderImpl { *; }
+-keep class org.cryptomator.cryptolib.v2.CryptorProviderImpl { *; }
