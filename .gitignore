@@ -24,3 +24,6 @@ out/
 *.jks
 *.keystore
 secrets/
+
+# Release signing (never commit)
+keystore.properties
