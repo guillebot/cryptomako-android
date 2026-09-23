@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">CryptoMako</string>
+    <string name="agpl_notice">CryptoMako is free software under the GNU Affero General Public License v3.0 (AGPL-3.0). Source: https://github.com/guillebot/cryptomako-android</string>
 </resources>

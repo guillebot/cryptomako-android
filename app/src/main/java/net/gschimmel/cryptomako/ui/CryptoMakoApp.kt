@@ -46,10 +46,11 @@ import net.gschimmel.cryptomako.vault.NodeKind
 import net.gschimmel.cryptomako.vault.VaultException
 import net.gschimmel.cryptomako.vault.VaultNode
 import net.gschimmel.cryptomako.vault.VaultSession
+import net.gschimmel.cryptomako.backup.VaultSessionHolder
 import java.io.File
 import java.nio.charset.StandardCharsets
 
-private enum class Screen { Settings, Unlock, Browser }
+private enum class Screen { Settings, Unlock, Browser, Backup, About }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -126,6 +127,7 @@ fun CryptoMakoApp() {
     fun lockVault() {
         session?.close()
         session = null
+        VaultSessionHolder.clear()
         nodes = emptyList()
         recursivePaths = emptyList()
         passphrase = ""
@@ -142,7 +144,11 @@ fun CryptoMakoApp() {
                 title = { Text("CryptoMako") },
                 actions = {
                     if (session != null) {
+                        TextButton(onClick = { screen = Screen.Backup }) { Text("Backup") }
+                        TextButton(onClick = { screen = Screen.About }) { Text("About") }
                         TextButton(onClick = { lockVault() }) { Text("Lock") }
+                    } else if (screen == Screen.Settings || screen == Screen.Unlock) {
+                        TextButton(onClick = { screen = Screen.About }) { Text("About") }
                     }
                 },
             )
@@ -240,6 +246,7 @@ fun CryptoMakoApp() {
                                 busy = false
                                 result.onSuccess { (s, root, all) ->
                                     session = s
+                                    VaultSessionHolder.set(s)
                                     nodes = root
                                     recursivePaths = all
                                     currentDirId = VaultSession.ROOT_DIR_ID
@@ -329,6 +336,20 @@ fun CryptoMakoApp() {
                         }
                     },
                 )
+
+                Screen.Backup -> {
+                    BackupPane(session = session)
+                    TextButton(onClick = { screen = Screen.Browser }) { Text("Back to browser") }
+                }
+
+                Screen.About -> {
+                    AboutPane()
+                    TextButton(
+                        onClick = {
+                            screen = if (session != null) Screen.Browser else Screen.Settings
+                        },
+                    ) { Text("Back") }
+                }
             }
 
             if (busy) CircularProgressIndicator()
