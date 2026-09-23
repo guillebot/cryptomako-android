@@ -9,6 +9,8 @@ Android companion to [CryptoMako](https://github.com/guillebot/cryptomako): unlo
 
 **Play Store:** not published yet — see `docs/play-listing.md` and `store/` for draft listing + signing notes.
 
+**Launcher icon:** CryptoMako brand mark from sibling monorepo `guillebot/cryptomako` → `docs/assets/brand/` (`icon.png` / `icon-512.png`). Adaptive + density mipmaps under `app/src/main/res/mipmap-*`; do not invent alternate marks.
+
 ## Modules
 
 | Module | Role |
