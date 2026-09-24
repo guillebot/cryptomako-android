@@ -438,6 +438,82 @@ class VaultSession private constructor(
         )
     }
 
+
+    /**
+     * Delete a file’s remote ciphertext (ObjectStore only). Never touches SAF/local source.
+     * Fail-closed on the primary ciphertext object; shortened `name.c9s` is best-effort.
+     */
+    fun deleteFile(node: VaultNode) {
+        if (node.kind != NodeKind.FILE && node.kind != NodeKind.SYMLINK) {
+            throw VaultException.NotAFile(node.cleartextName)
+        }
+        if (node.ciphertextKey.isEmpty()) {
+            throw VaultException.Io("deleteFile missing ciphertext key for ${node.cleartextName}")
+        }
+        try {
+            if (node.cipherName.endsWith(DirLayout.SHORT_SUFFIX)) {
+                val folder = node.ciphertextKey
+                    .removeSuffix(DirLayout.CONTENTS_FILE)
+                    .removeSuffix(DirLayout.SYMLINK_FILE)
+                try {
+                    store.deleteObject(folder + DirLayout.NAME_FILE)
+                } catch (_: ObjectStoreException.NotFound) {
+                    // optional companion
+                } catch (_: ObjectStoreException) {
+                    // best-effort name.c9s (Mac parity)
+                }
+                store.deleteObject(node.ciphertextKey)
+            } else {
+                store.deleteObject(node.ciphertextKey)
+            }
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("deleteFile failed for ${node.cleartextName}", e)
+        }
+    }
+
+    /**
+     * Delete a directory marker (and optionally children) from the remote ObjectStore.
+     * Never touches SAF/local source. Fail-closed on required deletes.
+     */
+    fun deleteDirectory(node: VaultNode, recursive: Boolean = false) {
+        if (node.kind != NodeKind.DIRECTORY || node.dirId == null) {
+            throw VaultException.NotADirectory(node.cleartextName)
+        }
+        val dirId = node.dirId
+        val children = list(dirId)
+        if (children.isNotEmpty()) {
+            if (!recursive) {
+                throw VaultException.DirectoryNotEmpty(node.cleartextName)
+            }
+            for (child in children) {
+                when (child.kind) {
+                    NodeKind.FILE, NodeKind.SYMLINK -> deleteFile(child)
+                    NodeKind.DIRECTORY -> deleteDirectory(child, recursive = true)
+                }
+            }
+        }
+        try {
+            if (node.ciphertextKey.isNotEmpty()) {
+                store.deleteObject(node.ciphertextKey)
+                if (node.cipherName.endsWith(DirLayout.SHORT_SUFFIX)) {
+                    val folder = node.ciphertextKey.removeSuffix(DirLayout.DIR_FILE)
+                    try {
+                        store.deleteObject(folder + DirLayout.NAME_FILE)
+                    } catch (_: ObjectStoreException.NotFound) {
+                    } catch (_: ObjectStoreException) {
+                    }
+                }
+            }
+            val childPrefix = DirLayout.ciphertextDirectoryPrefix(prefix, cryptor.fileNameCryptor(), dirId)
+            try {
+                store.deleteObject(childPrefix + DirLayout.DIRID_FILE)
+            } catch (_: ObjectStoreException.NotFound) {
+            }
+        } catch (e: ObjectStoreException) {
+            throw VaultException.Io("deleteDirectory failed for ${node.cleartextName}", e)
+        }
+    }
+
     @Volatile
     private var closed: Boolean = false
 

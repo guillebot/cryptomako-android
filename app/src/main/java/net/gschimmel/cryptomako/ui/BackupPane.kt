@@ -14,6 +14,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,6 +34,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import net.gschimmel.cryptomako.backup.BackupPreferences
 import net.gschimmel.cryptomako.backup.BackupSource
+import net.gschimmel.cryptomako.backup.BackupTransferMode
 import net.gschimmel.cryptomako.backup.BackupUriOverlap
 import net.gschimmel.cryptomako.backup.BackupWorker
 import net.gschimmel.cryptomako.backup.VaultSessionHolder
@@ -44,12 +48,15 @@ fun BackupPane(
     val context = LocalContext.current
     val backupPrefs = remember { BackupPreferences(context) }
     var sources by remember { mutableStateOf(backupPrefs.loadSources()) }
+    var transferMode by remember { mutableStateOf(backupPrefs.backupTransferMode) }
     var softWarn by remember { mutableStateOf<String?>(null) }
     var periodic by remember { mutableStateOf(backupPrefs.periodicEnabled) }
     var workMessage by remember { mutableStateOf<String?>(null) }
     var workError by remember { mutableStateOf<String?>(null) }
     var workRunning by remember { mutableStateOf(false) }
     var progressFraction by remember { mutableStateOf<Float?>(null) }
+
+    val runVerb = if (transferMode == BackupTransferMode.SYNC) "Sync" else "Backup"
 
     fun refreshSources() {
         sources = backupPrefs.loadSources()
@@ -81,7 +88,7 @@ fun BackupPane(
             }
             result.softWarn != null -> {
                 softWarn = result.softWarn
-                workMessage = "Added: $name (nested overlap — Sync will refuse until fixed)"
+                workMessage = "Added: $name (nested overlap — $runVerb will refuse until fixed)"
             }
             else -> {
                 softWarn = null
@@ -100,13 +107,13 @@ fun BackupPane(
                     workRunning = true
                     workError = null
                     progressFraction = null
-                    workMessage = "Backup running…"
+                    workMessage = "$runVerb running…"
                 }
                 WorkInfo.State.SUCCEEDED -> {
                     workRunning = false
                     progressFraction = 1f
                     workMessage = info.outputData.getString(BackupWorker.KEY_MESSAGE)
-                        ?: "Backup finished"
+                        ?: "$runVerb finished"
                     workError = null
                 }
                 WorkInfo.State.FAILED, WorkInfo.State.CANCELLED, WorkInfo.State.BLOCKED -> {
@@ -114,7 +121,7 @@ fun BackupPane(
                     progressFraction = null
                     val err = info.outputData.getString(BackupWorker.KEY_ERROR)
                         ?: info.outputData.getString(BackupWorker.KEY_MESSAGE)
-                        ?: "Backup failed"
+                        ?: "$runVerb failed"
                     workError = err
                     workMessage = null
                 }
@@ -130,14 +137,54 @@ fun BackupPane(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("Backup Sync (SAF)", style = MaterialTheme.typography.titleMedium)
+        Text("Backup", style = MaterialTheme.typography.titleMedium)
         Text(
             "Add device folders via Storage Access Framework. " +
                 "Files are encrypted into the unlocked vault under Backups/<folder>/…. " +
-                "Nested/overlapping sources: soft-warn on add, hard-fail on Sync. " +
+                "Nested/overlapping sources: soft-warn on add, hard-fail on $runVerb. " +
+                "Never deletes files on the SAF source. " +
                 "Remote puts succeed only on HTTP 2xx (fail-closed). " +
                 "Requires an unlocked vault; passphrase is never stored for background work.",
             style = MaterialTheme.typography.bodySmall,
+        )
+
+        Text("Transfer mode", style = MaterialTheme.typography.titleSmall)
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            SegmentedButton(
+                selected = transferMode == BackupTransferMode.BACKUP,
+                onClick = {
+                    if (workRunning) return@SegmentedButton
+                    transferMode = BackupTransferMode.BACKUP
+                    backupPrefs.backupTransferMode = BackupTransferMode.BACKUP
+                },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                enabled = !workRunning,
+                label = { Text("Backup") },
+            )
+            SegmentedButton(
+                selected = transferMode == BackupTransferMode.SYNC,
+                onClick = {
+                    if (workRunning) return@SegmentedButton
+                    transferMode = BackupTransferMode.SYNC
+                    backupPrefs.backupTransferMode = BackupTransferMode.SYNC
+                },
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                enabled = !workRunning,
+                label = { Text("Sync") },
+            )
+        }
+        Text(
+            if (transferMode == BackupTransferMode.BACKUP) {
+                "Backup copies and updates into the vault. It never deletes the SAF source, " +
+                    "and it does not remove vault files that are missing locally."
+            } else {
+                "Sync copies and updates, then deletes ciphertext in the vault under each " +
+                    "source’s Backups/<folder>/ that is missing from the local tree. " +
+                    "It never deletes the SAF source. Prefer Backup unless you intentionally " +
+                    "want vault orphans removed."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Text("Backup sources", style = MaterialTheme.typography.titleSmall)
@@ -159,7 +206,7 @@ fun BackupPane(
                             backupPrefs.removeSource(src.id)
                             refreshSources()
                             softWarn = BackupUriOverlap.overlapErrorOrNull(backupPrefs.loadSources())
-                                ?.let { "Still overlapping — Sync will refuse until fixed." }
+                                ?.let { "Still overlapping — $runVerb will refuse until fixed." }
                             workMessage = "Removed: ${src.displayName}"
                         },
                     ) { Text("Remove") }
@@ -180,7 +227,7 @@ fun BackupPane(
             enabled = !workRunning && session != null && sources.isNotEmpty(),
             onClick = {
                 if (session == null) {
-                    workError = "Unlock the vault before backup"
+                    workError = "Unlock the vault before $runVerb"
                     return@Button
                 }
                 // Preflight hard-fail in UI so the user sees the message without waiting on WM.
@@ -193,17 +240,17 @@ fun BackupPane(
                 VaultSessionHolder.set(session)
                 workError = null
                 softWarn = null
-                workMessage = "Enqueueing backup…"
+                workMessage = "Enqueueing $runVerb…"
                 BackupWorker.enqueueNow(context)
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
                 when {
-                    session == null -> "Backup now (unlock first)"
-                    sources.isEmpty() -> "Backup now (add folder first)"
-                    workRunning -> "Backup running…"
-                    else -> "Backup now"
+                    session == null -> "$runVerb now (unlock first)"
+                    sources.isEmpty() -> "$runVerb now (add folder first)"
+                    workRunning -> "$runVerb running…"
+                    else -> "$runVerb now"
                 },
             )
         }
@@ -215,9 +262,9 @@ fun BackupPane(
                 backupPrefs.periodicEnabled = periodic
                 BackupWorker.setPeriodicEnabled(context, periodic)
                 workMessage = if (periodic) {
-                    "Periodic backup enabled (every ~12h; still requires unlocked vault in process)"
+                    "Periodic $runVerb enabled (every ~12h; still requires unlocked vault in process)"
                 } else {
-                    "Periodic backup disabled"
+                    "Periodic $runVerb disabled"
                 }
             },
             label = {

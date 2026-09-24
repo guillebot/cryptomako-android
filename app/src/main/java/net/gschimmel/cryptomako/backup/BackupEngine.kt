@@ -2,6 +2,7 @@ package net.gschimmel.cryptomako.backup
 
 import android.content.Context
 import android.net.Uri
+import net.gschimmel.cryptomako.vault.NodeKind
 import net.gschimmel.cryptomako.vault.VaultException
 import net.gschimmel.cryptomako.vault.VaultSession
 import java.io.IOException
@@ -14,14 +15,21 @@ data class BackupProgress(
     val bytesTotal: Long,
     val currentPath: String,
     val filesSkipped: Int = 0,
+    /** Vault ciphertext items removed in Sync mode; always 0 in Backup mode. */
+    val filesDeleted: Int = 0,
     val error: String? = null,
 ) {
-    enum class Phase { SCANNING, UPLOADING, FINISHED, FAILED }
+    enum class Phase { SCANNING, UPLOADING, PRUNING, FINISHED, FAILED }
 }
 
 /**
  * Walks a SAF tree and uploads cleartext files into the unlocked vault
  * under `Backups/<folderName>/…` (encrypt + ObjectStore put, fail-closed).
+ *
+ * Transfer mode ([BackupTransferMode]):
+ * - **backup** (default): put/update only. Never deletes vault extras or SAF source.
+ * - **sync**: same puts, then delete vault-only ciphertext under this source’s
+ *   `Backups/<folder>/` (fail-closed). Never deletes SAF source.
  *
  * Limitations (MVP): loads each file into memory (no multipart / streaming);
  * overwrites same cleartext names; skips excluded paths; requires unlocked session.
@@ -34,6 +42,7 @@ class BackupEngine(
     fun run(
         treeUri: Uri,
         folderName: String,
+        transferMode: BackupTransferMode = BackupTransferMode.DEFAULT,
         onProgress: (BackupProgress) -> Unit = {},
         isCancelled: () -> Boolean = { false },
     ): BackupProgress {
@@ -63,6 +72,7 @@ class BackupEngine(
             return failed
         }
 
+        val localEligible = entries.map { it.relativePath }.toSet()
         val bytesTotal = entries.sumOf { it.sizeHint }
         var filesDone = 0
         var bytesDone = 0L
@@ -136,6 +146,76 @@ class BackupEngine(
             }
         }
 
+        var filesDeleted = 0
+        if (transferMode == BackupTransferMode.SYNC) {
+            onProgress(
+                BackupProgress(
+                    phase = BackupProgress.Phase.PRUNING,
+                    filesDone = filesDone,
+                    filesTotal = entries.size,
+                    bytesDone = bytesDone,
+                    bytesTotal = bytesTotal,
+                    currentPath = "Comparing vault Backups/$folderName/ to local tree…",
+                    filesSkipped = skipped,
+                ),
+            )
+            try {
+                // Scope: this source’s vault folder only (never sibling Backups/<other>/).
+                val rootDirId = session.ensureDirectoryPath(backupVaultPath(folderName, ""))
+                filesDeleted = deleteVaultOrphans(
+                    rootDirId = rootDirId,
+                    localFiles = localEligible,
+                    isCancelled = isCancelled,
+                    onPath = { rel ->
+                        onProgress(
+                            BackupProgress(
+                                phase = BackupProgress.Phase.PRUNING,
+                                filesDone = filesDone,
+                                filesTotal = entries.size,
+                                bytesDone = bytesDone,
+                                bytesTotal = bytesTotal,
+                                currentPath = rel,
+                                filesSkipped = skipped,
+                                filesDeleted = filesDeleted,
+                            ),
+                        )
+                    },
+                )
+            } catch (e: VaultException) {
+                val failed = BackupProgress(
+                    phase = BackupProgress.Phase.FAILED,
+                    filesDone = filesDone,
+                    filesTotal = entries.size,
+                    bytesDone = bytesDone,
+                    bytesTotal = bytesTotal,
+                    currentPath = "",
+                    filesSkipped = skipped,
+                    filesDeleted = filesDeleted,
+                    error = e.message ?: "Vault orphan prune failed",
+                )
+                onProgress(failed)
+                return failed
+            } catch (e: Exception) {
+                val msg = when {
+                    e.message == "Cancelled" || isCancelled() -> "Cancelled"
+                    else -> e.message ?: "Sync prune failed"
+                }
+                val failed = BackupProgress(
+                    phase = BackupProgress.Phase.FAILED,
+                    filesDone = filesDone,
+                    filesTotal = entries.size,
+                    bytesDone = bytesDone,
+                    bytesTotal = bytesTotal,
+                    currentPath = "",
+                    filesSkipped = skipped,
+                    filesDeleted = filesDeleted,
+                    error = msg,
+                )
+                onProgress(failed)
+                return failed
+            }
+        }
+
         val done = BackupProgress(
             phase = BackupProgress.Phase.FINISHED,
             filesDone = filesDone,
@@ -144,9 +224,57 @@ class BackupEngine(
             bytesTotal = bytesTotal,
             currentPath = "",
             filesSkipped = skipped,
+            filesDeleted = filesDeleted,
         )
         onProgress(done)
         return done
+    }
+
+    /**
+     * Sync mode only: delete remote ciphertext under this source’s vault folder that
+     * has no matching eligible SAF file. Never touches the SAF/local source tree.
+     * Fail-closed: ObjectStore / [VaultSession] delete errors abort the run.
+     */
+    private fun deleteVaultOrphans(
+        rootDirId: String,
+        localFiles: Set<String>,
+        isCancelled: () -> Boolean,
+        onPath: (String) -> Unit,
+    ): Int {
+        fun prune(dirId: String, relPrefix: String): Int {
+            if (isCancelled()) throw IOException("Cancelled")
+            val children = session.list(dirId)
+            var deleted = 0
+            for (child in children) {
+                if (isCancelled()) throw IOException("Cancelled")
+                val childRel = if (relPrefix.isEmpty()) {
+                    child.cleartextName
+                } else {
+                    "$relPrefix/${child.cleartextName}"
+                }
+                onPath(childRel)
+                when (child.kind) {
+                    NodeKind.FILE, NodeKind.SYMLINK -> {
+                        if (BackupOrphanPrune.isOrphanFile(childRel, localFiles)) {
+                            // Remote ObjectStore ciphertext delete only — never SAF source.
+                            session.deleteFile(child)
+                            deleted += 1
+                        }
+                    }
+                    NodeKind.DIRECTORY -> {
+                        val childDirId = child.dirId ?: continue
+                        if (!BackupOrphanPrune.hasLocalUnder(childRel, localFiles)) {
+                            session.deleteDirectory(child, recursive = true)
+                            deleted += 1
+                        } else {
+                            deleted += prune(childDirId, childRel)
+                        }
+                    }
+                }
+            }
+            return deleted
+        }
+        return prune(rootDirId, "")
     }
 
     private fun readAll(entry: SafFileEntry): ByteArray? {

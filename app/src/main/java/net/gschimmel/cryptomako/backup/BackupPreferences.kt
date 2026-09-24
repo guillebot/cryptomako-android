@@ -56,6 +56,17 @@ class BackupPreferences(context: Context) {
             prefs.edit().putBoolean(KEY_PERIODIC, value).apply()
         }
 
+
+    /**
+     * Shared family key [BackupTransferMode.PREFS_KEY] (`backup` | `sync`).
+     * Default [BackupTransferMode.BACKUP] — no vault orphan deletes until user picks Sync.
+     */
+    var backupTransferMode: BackupTransferMode
+        get() = BackupTransferMode.fromRaw(prefs.getString(BackupTransferMode.PREFS_KEY, null))
+        set(value) {
+            prefs.edit().putString(BackupTransferMode.PREFS_KEY, value.raw).apply()
+        }
+
     fun loadSources(): List<BackupSource> {
         val raw = prefs.getString(KEY_SOURCES_JSON, null)
         if (!raw.isNullOrBlank()) {

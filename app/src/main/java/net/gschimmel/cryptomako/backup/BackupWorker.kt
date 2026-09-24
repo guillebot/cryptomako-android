@@ -19,9 +19,13 @@ import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 
 /**
- * Runs Backup Sync while a [VaultSession] is held in [VaultSessionHolder].
+ * Runs Backup / Sync while a [VaultSession] is held in [VaultSessionHolder].
  * Fail-closed: if the vault is locked, the worker fails with a visible error (never silent success).
  * Hard-fails before any upload when nested/overlapping backup sources are present.
+ *
+ * Transfer mode comes from [BackupPreferences.backupTransferMode] (shared key
+ * [BackupTransferMode.PREFS_KEY]); Sync may delete vault orphans under each
+ * source’s `Backups/<folder>/` only — never the SAF source.
  */
 class BackupWorker(
     appContext: Context,
@@ -43,16 +47,19 @@ class BackupWorker(
             return fail(overlapErr)
         }
 
-        setForeground(createForegroundInfo("Starting backup…"))
+        val transferMode = prefs.backupTransferMode
+        val verb = if (transferMode == BackupTransferMode.SYNC) "Sync" else "Backup"
+        setForeground(createForegroundInfo("Starting $verb…", verb))
 
         val engine = BackupEngine(applicationContext, session, prefs.loadExcludes())
         var filesDone = 0
         var bytesDone = 0L
         var filesSkipped = 0
+        var filesDeleted = 0
 
         for ((index, source) in sources.withIndex()) {
             val label = source.displayName.ifBlank { "Device" }
-            notify("Backup ${index + 1}/${sources.size}: $label…")
+            notify("$verb ${index + 1}/${sources.size}: $label…", verb)
             val treeUri = try {
                 Uri.parse(source.safUri)
             } catch (e: Exception) {
@@ -61,15 +68,18 @@ class BackupWorker(
             val result = engine.run(
                 treeUri = treeUri,
                 folderName = label,
+                transferMode = transferMode,
                 onProgress = { p ->
                     val phaseLabel = when (p.phase) {
                         BackupProgress.Phase.SCANNING -> "Scanning $label…"
                         BackupProgress.Phase.UPLOADING ->
                             "Uploading $label ${p.filesDone}/${p.filesTotal}"
+                        BackupProgress.Phase.PRUNING ->
+                            "Removing vault-only under Backups/$label/…"
                         BackupProgress.Phase.FINISHED -> "Finished $label"
                         BackupProgress.Phase.FAILED -> "Failed $label"
                     }
-                    notify(phaseLabel)
+                    notify(phaseLabel, verb)
                 },
                 isCancelled = { isStopped },
             )
@@ -78,34 +88,40 @@ class BackupWorker(
                     filesDone += result.filesDone
                     bytesDone += result.bytesDone
                     filesSkipped += result.filesSkipped
+                    filesDeleted += result.filesDeleted
                 }
-                else -> return fail(result.error ?: "Backup failed for $label")
+                else -> return fail(result.error ?: "$verb failed for $label")
             }
         }
 
-        notify("Uploaded $filesDone files")
+        val summary = buildString {
+            append("Uploaded $filesDone files")
+            if (filesDeleted > 0) append("; removed $filesDeleted vault-only")
+            if (filesSkipped > 0) append("; skipped $filesSkipped")
+        }
+        notify(summary, verb)
         return Result.success(
             workDataOf(
                 KEY_FILES to filesDone,
                 KEY_BYTES to bytesDone,
-                KEY_MESSAGE to "Uploaded $filesDone files ($bytesDone bytes)" +
-                    if (filesSkipped > 0) "; skipped $filesSkipped" else "",
+                KEY_DELETED to filesDeleted,
+                KEY_MESSAGE to "$summary ($bytesDone bytes)",
             ),
         )
     }
 
     private fun fail(message: String): Result {
-        notify(message)
+        notify(message, "Backup")
         return Result.failure(workDataOf(KEY_MESSAGE to message, KEY_ERROR to message))
     }
 
-    private fun notify(text: String) {
+    private fun notify(text: String, verb: String) {
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureChannel(nm)
         nm.notify(
             NOTIFICATION_ID,
             NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-                .setContentTitle("CryptoMako Backup")
+                .setContentTitle("CryptoMako $verb")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
                 .setOngoing(true)
@@ -114,11 +130,11 @@ class BackupWorker(
         )
     }
 
-    private fun createForegroundInfo(text: String): ForegroundInfo {
+    private fun createForegroundInfo(text: String, verb: String): ForegroundInfo {
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureChannel(nm)
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setContentTitle("CryptoMako Backup")
+            .setContentTitle("CryptoMako $verb")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setOngoing(true)
@@ -150,6 +166,7 @@ class BackupWorker(
         const val KEY_ERROR = "error"
         const val KEY_FILES = "files"
         const val KEY_BYTES = "bytes"
+        const val KEY_DELETED = "deleted"
         private const val CHANNEL_ID = "cryptomako_backup"
         private const val NOTIFICATION_ID = 42
 
